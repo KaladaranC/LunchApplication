@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Daily Lunch Count</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="toolbar" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Catering SMS</p>
+          <h1 id="page-title">Daily Lunch Count</h1>
+        </div>
+        <div class="count-panel" aria-live="polite">
+          <span id="lunch-count">0</span>
+          <span>selected</span>
+        </div>
+      </section>
+
+      <section class="status-strip">
+        <div>
+          <span class="label">Today</span>
+          <strong id="today-label"></strong>
+        </div>
+        <div>
+          <span class="label">SMS</span>
+          <strong id="sms-status">Waiting for 8:00 AM</strong>
+        </div>
+      </section>
+
+      <form id="lunch-form" class="people-list">
+        <fieldset>
+          <legend>People</legend>
+          <div id="people-container"></div>
+        </fieldset>
+      </form>
+
+      <section class="actions" aria-label="Lunch count actions">
+        <button id="send-now" type="button">Send SMS Now</button>
+        <button id="reset-now" type="button" class="secondary">Reset Today</button>
+      </section>
+    </main>
+  </body>
+</html>
