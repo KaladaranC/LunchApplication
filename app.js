@@ -1,5 +1,5 @@
 const CONFIG = {
-  appsScriptUrl: "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE",
+  appsScriptUrl: "https://script.google.com/macros/s/AKfycby6iVheFBpNGT1sdSc05_MVdezyKoF97J8vsKY7gIM00YOgLpatpOAkjiPTUE5T0D4u/exec",
   pollIntervalMs: 10000,
 };
 
