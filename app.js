@@ -24,6 +24,7 @@ const resetNowButton = document.querySelector("#reset-now");
 
 let state = loadCachedState();
 let pendingWrites = 0;
+let actionInProgress = false;
 
 renderPeople();
 renderState("Loading shared count...");
@@ -97,11 +98,16 @@ async function updatePerson(name, selected) {
 }
 
 async function resetToday() {
+  if (actionInProgress) {
+    return;
+  }
+
   if (!isConfigured()) {
     setStatus("Add Apps Script URL first", "is-error");
     return;
   }
 
+  setActionButtonsDisabled(true);
   renderState("Resetting...");
   pendingWrites += 1;
 
@@ -112,15 +118,21 @@ async function resetToday() {
     renderState(`Reset failed: ${friendlyError(error)}`, "is-error");
   } finally {
     pendingWrites = Math.max(0, pendingWrites - 1);
+    setActionButtonsDisabled(false);
   }
 }
 
 async function sendLunchSms() {
+  if (actionInProgress) {
+    return;
+  }
+
   if (!isConfigured()) {
     setStatus("Add Apps Script URL first", "is-error");
     return;
   }
 
+  setActionButtonsDisabled(true);
   renderState("Sending SMS...");
   pendingWrites += 1;
 
@@ -131,6 +143,7 @@ async function sendLunchSms() {
     renderState(`SMS failed: ${friendlyError(error)}`, "is-error");
   } finally {
     pendingWrites = Math.max(0, pendingWrites - 1);
+    setActionButtonsDisabled(false);
   }
 }
 
@@ -279,6 +292,12 @@ function formatTime(timestamp) {
 function setStatus(text, className) {
   smsStatus.textContent = text;
   smsStatus.className = className;
+}
+
+function setActionButtonsDisabled(disabled) {
+  actionInProgress = disabled;
+  sendNowButton.disabled = disabled;
+  resetNowButton.disabled = disabled;
 }
 
 function isConfigured() {

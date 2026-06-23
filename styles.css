@@ -169,6 +169,13 @@ button:hover {
   background: var(--accent-dark);
 }
 
+button:disabled,
+button:disabled:hover {
+  background: #9ba7a1;
+  color: #edf2ef;
+  cursor: not-allowed;
+}
+
 button.secondary {
   border: 1px solid var(--line);
   background: var(--surface);
@@ -177,6 +184,13 @@ button.secondary {
 
 button.secondary:hover {
   background: #eef3ef;
+}
+
+button.secondary:disabled,
+button.secondary:disabled:hover {
+  border-color: var(--line);
+  background: #edf2ef;
+  color: #8a958f;
 }
 
 .is-warning {
