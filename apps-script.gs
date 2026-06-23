@@ -9,9 +9,11 @@ const PEOPLE = [
   "Ghayan",
 ];
 
-const SHEET_NAME = "Lunch Count";
+const SHEET_NAME = "Lunch State";
 const LOG_SHEET_NAME = "SMS Log";
 const SCRIPT_TIME_ZONE = "Asia/Colombo";
+const STATE_HEADERS = ["date", "selectedNamesJson", "updatedAt", "lastManualSentAt", "lastScheduledSentAt"];
+const LOG_HEADERS = ["sentAt", "date", "kind", "count", "message", "statusCode", "response"];
 
 function doPost(event) {
   try {
@@ -31,7 +33,7 @@ function doPost(event) {
     }
 
     if (action === "sendSms") {
-      return jsonResponse(sendLunchSms());
+      return jsonResponse(sendSms("manual"));
     }
 
     throw new Error("Unknown action: " + action);
@@ -47,8 +49,8 @@ function doGet() {
 function setupLunchCount() {
   ensureSheets();
   PropertiesService.getScriptProperties().setProperties({
-    TEXTBEE_API_KEY: "4180b843-1871-48ad-ad18-0500b2fc91b5",
-    TEXTBEE_DEVICE_ID: "6a3a6d6377015dcde10fe4a7",
+    TEXTBEE_API_KEY: "PASTE_TEXTBEE_API_KEY_HERE",
+    TEXTBEE_DEVICE_ID: "PASTE_TEXTBEE_DEVICE_ID_HERE",
     CATERING_PHONE: "+94761962266",
   });
 
@@ -66,7 +68,13 @@ function setupLunchCount() {
 }
 
 function scheduledSendLunchSms() {
-  sendLunchSms();
+  const today = todayKey();
+  if (getLastScheduledSentDate() === today) {
+    return;
+  }
+
+  sendSms("scheduled");
+  setLastScheduledSentDate(today);
 }
 
 function setSelection(name, selected) {
@@ -78,19 +86,21 @@ function setSelection(name, selected) {
   lock.waitLock(5000);
 
   try {
-    const sheet = ensureSheets().stateSheet;
-    const date = todayKey();
-    const rows = sheet.getDataRange().getValues();
-    const rowIndex = findRowIndex(rows, date, name);
-    const now = new Date();
-
-    if (rowIndex === -1) {
-      sheet.appendRow([date, name, Boolean(selected), now]);
+    const current = getCurrentState();
+    const selectedNames = new Set(current.selectedNames);
+    if (selected) {
+      selectedNames.add(name);
     } else {
-      sheet.getRange(rowIndex + 1, 3, 1, 2).setValues([[Boolean(selected), now]]);
+      selectedNames.delete(name);
     }
 
-    return getTodayState();
+    return saveState({
+      date: todayKey(),
+      selectedNames: PEOPLE.filter((person) => selectedNames.has(person)),
+      updatedAt: new Date().toISOString(),
+      lastManualSentAt: current.lastManualSentAt,
+      lastScheduledSentAt: current.lastScheduledSentAt,
+    });
   } finally {
     lock.releaseLock();
   }
@@ -101,109 +111,163 @@ function resetToday() {
   lock.waitLock(5000);
 
   try {
-    const sheet = ensureSheets().stateSheet;
-    const date = todayKey();
-    const rows = sheet.getDataRange().getValues();
-    const now = new Date();
+    return saveState({
+      date: todayKey(),
+      selectedNames: [],
+      updatedAt: new Date().toISOString(),
+      lastManualSentAt: "",
+      lastScheduledSentAt: "",
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
 
-    PEOPLE.forEach((name) => {
-      const rowIndex = findRowIndex(rows, date, name);
-      if (rowIndex === -1) {
-        sheet.appendRow([date, name, false, now]);
-      } else {
-        sheet.getRange(rowIndex + 1, 3, 1, 2).setValues([[false, now]]);
-      }
+function sendSms(kind) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const current = getCurrentState();
+    const properties = PropertiesService.getScriptProperties();
+    const apiKey = properties.getProperty("TEXTBEE_API_KEY");
+    const deviceId = properties.getProperty("TEXTBEE_DEVICE_ID");
+    const cateringPhone = properties.getProperty("CATERING_PHONE");
+
+    if (!apiKey || apiKey.includes("PASTE_")) {
+      throw new Error("Missing TEXTBEE_API_KEY in Script Properties");
+    }
+    if (!deviceId || deviceId.includes("PASTE_")) {
+      throw new Error("Missing TEXTBEE_DEVICE_ID in Script Properties");
+    }
+    if (!cateringPhone) {
+      throw new Error("Missing CATERING_PHONE in Script Properties");
+    }
+
+    const message = buildMessage(current.date, current.selectedNames, kind);
+    const response = UrlFetchApp.fetch(
+      "https://api.textbee.dev/api/v1/gateway/devices/" + encodeURIComponent(deviceId) + "/send-sms",
+      {
+        method: "post",
+        contentType: "application/json",
+        headers: {
+          "x-api-key": apiKey,
+        },
+        payload: JSON.stringify({
+          recipients: [cateringPhone],
+          message,
+        }),
+        muteHttpExceptions: true,
+      },
+    );
+
+    const statusCode = response.getResponseCode();
+    const responseBody = response.getContentText();
+    logSms({
+      sentAt: new Date(),
+      date: current.date,
+      kind,
+      count: current.selectedNames.length,
+      message,
+      statusCode,
+      response: responseBody,
     });
 
-    setLastSentDate("");
-    return getTodayState();
+    if (statusCode < 200 || statusCode >= 300) {
+      throw new Error("TextBee returned HTTP " + statusCode + ": " + responseBody);
+    }
+
+    const updatedAt = new Date().toISOString();
+    if (kind === "manual") {
+      return saveState({
+        date: current.date,
+        selectedNames: current.selectedNames,
+        updatedAt,
+        lastManualSentAt: updatedAt,
+        lastScheduledSentAt: current.lastScheduledSentAt,
+      });
+    }
+
+    return saveState({
+      date: current.date,
+      selectedNames: current.selectedNames,
+      updatedAt,
+      lastManualSentAt: current.lastManualSentAt,
+      lastScheduledSentAt: updatedAt,
+    });
   } finally {
     lock.releaseLock();
   }
 }
 
 function getTodayState() {
-  const sheet = ensureSheets().stateSheet;
-  const date = todayKey();
-  const rows = sheet.getDataRange().getValues();
-  const selectedNames = rows
-    .slice(1)
-    .filter((row) => cellDateKey(row[0]) === date && row[2] === true)
-    .map((row) => row[1])
-    .filter((name) => PEOPLE.includes(name));
-
+  const current = getCurrentState();
   return {
     ok: true,
-    date,
-    selectedNames: PEOPLE.filter((name) => selectedNames.includes(name)),
-    lastSentDate: getLastSentDate(),
+    date: current.date,
+    selectedNames: current.selectedNames,
+    updatedAt: current.updatedAt,
+    lastManualSentAt: current.lastManualSentAt,
+    lastScheduledSentAt: current.lastScheduledSentAt,
   };
 }
 
-function sendLunchSms() {
-  const state = getTodayState();
+function getCurrentState() {
+  const sheet = ensureStateSheet();
+  const rows = sheet.getDataRange().getValues();
+  const today = todayKey();
+  const row = rows.find((value, index) => index > 0 && String(value[0]) === today);
 
-  if (state.lastSentDate === state.date) {
-    return { ...state, smsSkipped: true };
+  if (!row) {
+    return {
+      date: today,
+      selectedNames: [],
+      updatedAt: "",
+      lastManualSentAt: "",
+      lastScheduledSentAt: "",
+    };
   }
 
-  const properties = PropertiesService.getScriptProperties();
-  const apiKey = properties.getProperty("TEXTBEE_API_KEY");
-  const deviceId = properties.getProperty("TEXTBEE_DEVICE_ID");
-  const cateringPhone = properties.getProperty("CATERING_PHONE");
+  return {
+    date: String(row[0]),
+    selectedNames: parseSelectedNames(row[1]),
+    updatedAt: row[2] ? toIsoString(row[2]) : "",
+    lastManualSentAt: row[3] ? toIsoString(row[3]) : "",
+    lastScheduledSentAt: row[4] ? toIsoString(row[4]) : "",
+  };
+}
 
-  if (!apiKey || apiKey.includes("PASTE_")) {
-    throw new Error("Missing TEXTBEE_API_KEY in Script Properties");
-  }
-  if (!deviceId || deviceId.includes("PASTE_")) {
-    throw new Error("Missing TEXTBEE_DEVICE_ID in Script Properties");
-  }
-  if (!cateringPhone) {
-    throw new Error("Missing CATERING_PHONE in Script Properties");
-  }
+function saveState(state) {
+  const sheet = ensureStateSheet();
+  const rows = sheet.getDataRange().getValues();
+  const today = todayKey();
+  const rowIndex = rows.findIndex((value, index) => index > 0 && String(value[0]) === today);
+  const row = [
+    state.date || today,
+    JSON.stringify(state.selectedNames || []),
+    state.updatedAt || "",
+    state.lastManualSentAt || "",
+    state.lastScheduledSentAt || "",
+  ];
 
-  const message = "Lunch count for " + state.date + ": " + state.selectedNames.length + ".";
-  const response = UrlFetchApp.fetch(
-    "https://api.textbee.dev/api/v1/gateway/devices/" + encodeURIComponent(deviceId) + "/send-sms",
-    {
-      method: "post",
-      contentType: "application/json",
-      headers: {
-        "x-api-key": apiKey,
-      },
-      payload: JSON.stringify({
-        recipients: [cateringPhone],
-        message,
-      }),
-      muteHttpExceptions: true,
-    },
-  );
-
-  const statusCode = response.getResponseCode();
-  const responseBody = response.getContentText();
-  logSms(state.date, state.selectedNames.length, message, statusCode, responseBody);
-
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error("TextBee returned HTTP " + statusCode + ": " + responseBody);
+  if (rowIndex === -1) {
+    sheet.appendRow(row);
+  } else {
+    sheet.getRange(rowIndex + 1, 1, 1, STATE_HEADERS.length).setValues([row]);
   }
 
-  setLastSentDate(state.date);
   return getTodayState();
 }
 
 function ensureSheets() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const stateSheet = getOrCreateSheet(spreadsheet, SHEET_NAME, ["date", "name", "selected", "updatedAt"]);
-  const logSheet = getOrCreateSheet(spreadsheet, LOG_SHEET_NAME, [
-    "sentAt",
-    "date",
-    "count",
-    "message",
-    "statusCode",
-    "response",
-  ]);
-
+  const stateSheet = getOrCreateSheet(spreadsheet, SHEET_NAME, STATE_HEADERS);
+  const logSheet = getOrCreateSheet(spreadsheet, LOG_SHEET_NAME, LOG_HEADERS);
   return { stateSheet, logSheet };
+}
+
+function ensureStateSheet() {
+  return ensureSheets().stateSheet;
 }
 
 function getOrCreateSheet(spreadsheet, name, headers) {
@@ -214,32 +278,55 @@ function getOrCreateSheet(spreadsheet, name, headers) {
   return sheet;
 }
 
-function findRowIndex(rows, date, name) {
-  return rows.findIndex((row, index) => index > 0 && cellDateKey(row[0]) === date && row[1] === name);
+function parseSelectedNames(raw) {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(String(raw));
+    return Array.isArray(parsed) ? parsed.filter((name) => PEOPLE.includes(name)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function buildMessage(date, selectedNames, kind) {
+  const count = selectedNames.length;
+  const names = count ? selectedNames.join(", ") : "No names selected";
+  return "Lunch count (" + kind + ") for " + date + ": " + count + ". Names: " + names + ".";
+}
+
+function logSms(entry) {
+  const sheet = ensureSheets().logSheet;
+  sheet.appendRow([
+    entry.sentAt,
+    entry.date,
+    entry.kind,
+    entry.count,
+    entry.message,
+    entry.statusCode,
+    entry.response,
+  ]);
 }
 
 function todayKey(date) {
   return Utilities.formatDate(date || new Date(), SCRIPT_TIME_ZONE, "yyyy-MM-dd");
 }
 
-function cellDateKey(value) {
+function toIsoString(value) {
   if (Object.prototype.toString.call(value) === "[object Date]") {
-    return todayKey(value);
+    return value.toISOString();
   }
   return String(value);
 }
 
-function getLastSentDate() {
-  return PropertiesService.getScriptProperties().getProperty("LAST_SENT_DATE") || "";
+function getLastScheduledSentDate() {
+  return PropertiesService.getScriptProperties().getProperty("LAST_SCHEDULED_SENT_DATE") || "";
 }
 
-function setLastSentDate(date) {
-  PropertiesService.getScriptProperties().setProperty("LAST_SENT_DATE", date);
-}
-
-function logSms(date, count, message, statusCode, responseBody) {
-  const sheet = ensureSheets().logSheet;
-  sheet.appendRow([new Date(), date, count, message, statusCode, responseBody]);
+function setLastScheduledSentDate(date) {
+  PropertiesService.getScriptProperties().setProperty("LAST_SCHEDULED_SENT_DATE", date);
 }
 
 function jsonResponse(data) {

@@ -1,6 +1,6 @@
 const CONFIG = {
-  appsScriptUrl: "https://script.google.com/macros/s/AKfycby6iVheFBpNGT1sdSc05_MVdezyKoF97J8vsKY7gIM00YOgLpatpOAkjiPTUE5T0D4u/exec",
-  pollIntervalMs: 15000,
+  appsScriptUrl: "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE",
+  pollIntervalMs: 10000,
 };
 
 const PEOPLE = [
@@ -22,16 +22,16 @@ const smsStatus = document.querySelector("#sms-status");
 const sendNowButton = document.querySelector("#send-now");
 const resetNowButton = document.querySelector("#reset-now");
 
-let state = loadLocalState();
-let isSaving = false;
+let state = loadCachedState();
+let pendingWrites = 0;
 
 renderPeople();
-refreshView("Loading shared count...");
+renderState("Loading shared count...");
 loadSharedState();
 window.setInterval(loadSharedState, CONFIG.pollIntervalMs);
 
-sendNowButton.addEventListener("click", sendLunchSms);
-resetNowButton.addEventListener("click", resetToday);
+sendNowButton.addEventListener("click", () => sendLunchSms());
+resetNowButton.addEventListener("click", () => resetToday());
 
 function renderPeople() {
   peopleContainer.innerHTML = "";
@@ -58,67 +58,60 @@ function renderPeople() {
 }
 
 async function loadSharedState() {
-  if (!isConfigured() || isSaving) {
+  if (!isConfigured() || pendingWrites > 0) {
     return;
   }
 
   try {
     const result = await callBackend("getState");
-    applySharedState(result, "Shared count loaded");
+    applySharedState(result);
   } catch (error) {
     setStatus(`Could not load shared count: ${friendlyError(error)}`, "is-error");
   }
 }
 
 async function updatePerson(name, selected) {
-  const previousState = structuredClone(state);
-  setSelectedName(name, selected);
-  saveLocalState();
+  const nextState = updateLocalSelection(name, selected);
+  state = nextState;
+  persistCachedState();
   syncCheckboxes();
-  refreshView("Saving...");
+  renderState("Saving...");
 
   if (!isConfigured()) {
     setStatus("Add Apps Script URL first", "is-error");
     return;
   }
 
+  pendingWrites += 1;
+
   try {
-    isSaving = true;
     const result = await callBackend("setSelection", { name, selected });
-    applySharedState(result, "Saved");
+    applySharedState(result);
   } catch (error) {
-    state = previousState;
-    saveLocalState();
+    state = loadCachedState();
     syncCheckboxes();
-    refreshView(`Save failed: ${friendlyError(error)}`, "is-error");
+    renderState(`Save failed: ${friendlyError(error)}`, "is-error");
   } finally {
-    isSaving = false;
+    pendingWrites = Math.max(0, pendingWrites - 1);
   }
 }
 
 async function resetToday() {
-  const previousState = structuredClone(state);
-  state = freshState(todayKey());
-  saveLocalState();
-  syncCheckboxes();
-  refreshView("Resetting...");
-
   if (!isConfigured()) {
     setStatus("Add Apps Script URL first", "is-error");
     return;
   }
 
+  renderState("Resetting...");
+  pendingWrites += 1;
+
   try {
-    isSaving = true;
     const result = await callBackend("resetToday");
     applySharedState(result, "Reset");
   } catch (error) {
-    state = previousState;
-    saveLocalState();
-    syncCheckboxes();
-    refreshView(`Reset failed: ${friendlyError(error)}`, "is-error");
+    renderState(`Reset failed: ${friendlyError(error)}`, "is-error");
   } finally {
-    isSaving = false;
+    pendingWrites = Math.max(0, pendingWrites - 1);
   }
 }
 
@@ -128,13 +121,16 @@ async function sendLunchSms() {
     return;
   }
 
-  setStatus("Sending SMS...", "");
+  renderState("Sending SMS...");
+  pendingWrites += 1;
 
   try {
     const result = await callBackend("sendSms");
     applySharedState(result, "SMS sent");
   } catch (error) {
-    setStatus(`SMS failed: ${friendlyError(error)}`, "is-error");
+    renderState(`SMS failed: ${friendlyError(error)}`, "is-error");
+  } finally {
+    pendingWrites = Math.max(0, pendingWrites - 1);
   }
 }
 
@@ -159,18 +155,14 @@ async function callBackend(action, payload = {}) {
   return result;
 }
 
-function applySharedState(result, message) {
-  state = {
-    date: result.date || todayKey(),
-    selectedNames: Array.isArray(result.selectedNames) ? result.selectedNames : [],
-    lastSentDate: result.lastSentDate || "",
-  };
-  saveLocalState();
+function applySharedState(result, message = "") {
+  state = normalizeState(result);
+  persistCachedState();
   syncCheckboxes();
-  refreshView(message);
+  renderState(message);
 }
 
-function refreshView(message = "") {
+function renderState(message = "") {
   resetIfNewDayLocally();
   todayLabel.textContent = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -182,24 +174,33 @@ function refreshView(message = "") {
 
   if (message) {
     setStatus(message, "");
-  } else if (state.lastSentDate === todayKey()) {
-    setStatus("SMS sent today", "");
+    return;
+  }
+
+  if (state.lastScheduledSentAt) {
+    setStatus(`Last SMS at ${formatTime(state.lastScheduledSentAt)}`, "");
   } else {
-    setStatus("Waiting for Apps Script trigger", "");
+    setStatus("Waiting for 8:00 AM", "");
   }
 }
 
-function setSelectedName(name, selected) {
+function updateLocalSelection(name, selected) {
   const selectedNames = new Set(state.selectedNames);
   if (selected) {
     selectedNames.add(name);
   } else {
     selectedNames.delete(name);
   }
-  state.selectedNames = PEOPLE.filter((person) => selectedNames.has(person));
+
+  return {
+    ...state,
+    date: todayKey(),
+    selectedNames: PEOPLE.filter((person) => selectedNames.has(person)),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
-function loadLocalState() {
+function loadCachedState() {
   const raw = localStorage.getItem(stateKey);
   if (!raw) {
     return freshState(todayKey());
@@ -210,32 +211,40 @@ function loadLocalState() {
     if (parsed.date !== todayKey()) {
       return freshState(todayKey());
     }
-    return {
-      date: parsed.date,
-      selectedNames: Array.isArray(parsed.selectedNames) ? parsed.selectedNames : [],
-      lastSentDate: parsed.lastSentDate || "",
-    };
+    return normalizeState(parsed);
   } catch {
     return freshState(todayKey());
   }
+}
+
+function persistCachedState() {
+  localStorage.setItem(stateKey, JSON.stringify(state));
 }
 
 function freshState(date) {
   return {
     date,
     selectedNames: [],
-    lastSentDate: "",
+    updatedAt: "",
+    lastManualSentAt: "",
+    lastScheduledSentAt: "",
   };
 }
 
-function saveLocalState() {
-  localStorage.setItem(stateKey, JSON.stringify(state));
+function normalizeState(result) {
+  return {
+    date: result.date || todayKey(),
+    selectedNames: Array.isArray(result.selectedNames) ? result.selectedNames : [],
+    updatedAt: result.updatedAt || "",
+    lastManualSentAt: result.lastManualSentAt || "",
+    lastScheduledSentAt: result.lastScheduledSentAt || "",
+  };
 }
 
 function resetIfNewDayLocally() {
   if (state.date !== todayKey()) {
     state = freshState(todayKey());
-    saveLocalState();
+    persistCachedState();
     syncCheckboxes();
   }
 }
@@ -251,6 +260,20 @@ function todayKey(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  const value = new Date(timestamp);
+  if (Number.isNaN(value.getTime())) {
+    return timestamp;
+  }
+  return value.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function setStatus(text, className) {

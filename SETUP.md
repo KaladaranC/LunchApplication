@@ -49,6 +49,6 @@ with the deployed Apps Script web app URL.
 
 ## Notes
 
-- The page polls the shared sheet every 15 seconds, so visitors will see updates shortly after someone ticks a name.
+- The page polls the shared sheet every 10 seconds, so visitors will see updates quickly after someone ticks a name.
 - The SMS is sent by Apps Script at 8 AM Asia/Colombo time.
-- The `Send SMS Now` button calls Apps Script and still keeps the TextBee credentials private.
+- The `Send SMS Now` button can be used multiple times per day and still keeps the TextBee credentials private.
