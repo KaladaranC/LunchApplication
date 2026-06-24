@@ -59,13 +59,27 @@ function doGet() {
 }
 
 function setupLunchCount() {
+  try {
+    setupLunchSheetsAndProperties();
+    installLunchSmsTrigger();
+    Logger.log("Lunch count setup completed.");
+  } catch (error) {
+    const details = error && error.stack ? error.stack : String(error);
+    Logger.log(details);
+    throw new Error("setupLunchCount failed: " + details);
+  }
+}
+
+function setupLunchSheetsAndProperties() {
   ensureSheets();
-  PropertiesService.getScriptProperties().setProperties({
+  setDefaultScriptProperties({
     TEXTBEE_API_KEY: "PASTE_TEXTBEE_API_KEY_HERE",
     TEXTBEE_DEVICE_ID: "PASTE_TEXTBEE_DEVICE_ID_HERE",
     CATERING_PHONE: "+94761962266",
   });
+}
 
+function installLunchSmsTrigger() {
   ScriptApp.getProjectTriggers()
     .filter((trigger) => trigger.getHandlerFunction() === "scheduledSendLunchSms")
     .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
@@ -77,6 +91,22 @@ function setupLunchCount() {
     .nearMinute(0)
     .inTimezone(SCRIPT_TIME_ZONE)
     .create();
+}
+
+function setDefaultScriptProperties(defaults) {
+  const properties = PropertiesService.getScriptProperties();
+  const current = properties.getProperties();
+  const missing = {};
+
+  Object.keys(defaults).forEach((key) => {
+    if (!current[key]) {
+      missing[key] = defaults[key];
+    }
+  });
+
+  if (Object.keys(missing).length) {
+    properties.setProperties(missing);
+  }
 }
 
 function scheduledSendLunchSms() {
@@ -327,6 +357,10 @@ function saveState(state) {
 
 function ensureSheets() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  if (!spreadsheet) {
+    throw new Error("No active spreadsheet found. Open Apps Script from the Google Sheet with Extensions > Apps Script, then run setupLunchCount again.");
+  }
+
   const stateSheet = getOrCreateSheet(spreadsheet, SHEET_NAME, STATE_HEADERS);
   const logSheet = getOrCreateSheet(spreadsheet, LOG_SHEET_NAME, LOG_HEADERS);
   return { stateSheet, logSheet };
@@ -338,6 +372,8 @@ function ensureStateSheet() {
 
 function getOrCreateSheet(spreadsheet, name, headers) {
   const sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
+  ensureColumnCount(sheet, headers.length);
+
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
   } else {
@@ -347,6 +383,13 @@ function getOrCreateSheet(spreadsheet, name, headers) {
     }
   }
   return sheet;
+}
+
+function ensureColumnCount(sheet, columnCount) {
+  const missingColumns = columnCount - sheet.getMaxColumns();
+  if (missingColumns > 0) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), missingColumns);
+  }
 }
 
 function parseSelectedNames(raw) {
