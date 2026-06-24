@@ -16,7 +16,7 @@
         </div>
         <div class="count-panel" aria-live="polite">
           <span id="lunch-count">0</span>
-          <span>selected</span>
+          <span>total</span>
         </div>
       </section>
 
@@ -37,6 +37,17 @@
           <div id="people-container"></div>
         </fieldset>
       </form>
+
+      <section class="meal-options" aria-label="Lunch options">
+        <label class="option-row" for="extra-curry">
+          <input id="extra-curry" type="checkbox">
+          <span>Extra curry portion (150/=)</span>
+        </label>
+        <label class="option-row" for="budget-friendly">
+          <input id="budget-friendly" type="checkbox">
+          <span>Budget friendly (1 parcel less)</span>
+        </label>
+      </section>
 
       <section class="actions" aria-label="Lunch count actions">
         <button id="send-now" type="button">Send SMS Now</button>

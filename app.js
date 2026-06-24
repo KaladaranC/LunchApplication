@@ -21,6 +21,8 @@ const todayLabel = document.querySelector("#today-label");
 const smsStatus = document.querySelector("#sms-status");
 const sendNowButton = document.querySelector("#send-now");
 const resetNowButton = document.querySelector("#reset-now");
+const extraCurryCheckbox = document.querySelector("#extra-curry");
+const budgetFriendlyCheckbox = document.querySelector("#budget-friendly");
 
 let state = loadCachedState();
 let pendingWrites = 0;
@@ -33,6 +35,8 @@ window.setInterval(loadSharedState, CONFIG.pollIntervalMs);
 
 sendNowButton.addEventListener("click", () => sendLunchSms());
 resetNowButton.addEventListener("click", () => resetToday());
+extraCurryCheckbox.addEventListener("change", () => updateOption("extraCurryPortion", extraCurryCheckbox.checked));
+budgetFriendlyCheckbox.addEventListener("change", () => updateOption("budgetFriendly", budgetFriendlyCheckbox.checked));
 
 function renderPeople() {
   peopleContainer.innerHTML = "";
@@ -75,7 +79,7 @@ async function updatePerson(name, selected) {
   const nextState = updateLocalSelection(name, selected);
   state = nextState;
   persistCachedState();
-  syncCheckboxes();
+  syncFormControls();
   renderState("Saving...");
 
   if (!isConfigured()) {
@@ -90,7 +94,37 @@ async function updatePerson(name, selected) {
     applySharedState(result);
   } catch (error) {
     state = loadCachedState();
-    syncCheckboxes();
+    syncFormControls();
+    renderState(`Save failed: ${friendlyError(error)}`, "is-error");
+  } finally {
+    pendingWrites = Math.max(0, pendingWrites - 1);
+  }
+}
+
+async function updateOption(option, value) {
+  state = {
+    ...state,
+    date: todayKey(),
+    [option]: value,
+    updatedAt: new Date().toISOString(),
+  };
+  persistCachedState();
+  syncFormControls();
+  renderState("Saving...");
+
+  if (!isConfigured()) {
+    setStatus("Add Apps Script URL first", "is-error");
+    return;
+  }
+
+  pendingWrites += 1;
+
+  try {
+    const result = await callBackend("setOption", { option, value });
+    applySharedState(result);
+  } catch (error) {
+    state = loadCachedState();
+    syncFormControls();
     renderState(`Save failed: ${friendlyError(error)}`, "is-error");
   } finally {
     pendingWrites = Math.max(0, pendingWrites - 1);
@@ -171,7 +205,7 @@ async function callBackend(action, payload = {}) {
 function applySharedState(result, message = "") {
   state = normalizeState(result);
   persistCachedState();
-  syncCheckboxes();
+  syncFormControls();
   renderState(message);
 }
 
@@ -183,7 +217,7 @@ function renderState(message = "") {
     month: "short",
     day: "numeric",
   });
-  lunchCount.textContent = state.selectedNames.length;
+  lunchCount.textContent = getLunchCount(state);
 
   if (message) {
     setStatus(message, "");
@@ -238,6 +272,8 @@ function freshState(date) {
   return {
     date,
     selectedNames: [],
+    extraCurryPortion: false,
+    budgetFriendly: false,
     updatedAt: "",
     lastManualSentAt: "",
     lastScheduledSentAt: "",
@@ -248,6 +284,8 @@ function normalizeState(result) {
   return {
     date: result.date || todayKey(),
     selectedNames: Array.isArray(result.selectedNames) ? result.selectedNames : [],
+    extraCurryPortion: Boolean(result.extraCurryPortion),
+    budgetFriendly: Boolean(result.budgetFriendly),
     updatedAt: result.updatedAt || "",
     lastManualSentAt: result.lastManualSentAt || "",
     lastScheduledSentAt: result.lastScheduledSentAt || "",
@@ -258,14 +296,24 @@ function resetIfNewDayLocally() {
   if (state.date !== todayKey()) {
     state = freshState(todayKey());
     persistCachedState();
-    syncCheckboxes();
+    syncFormControls();
   }
 }
 
-function syncCheckboxes() {
+function syncFormControls() {
   document.querySelectorAll(".person-row input").forEach((checkbox) => {
     checkbox.checked = state.selectedNames.includes(checkbox.value);
   });
+  extraCurryCheckbox.checked = state.extraCurryPortion;
+  budgetFriendlyCheckbox.checked = state.budgetFriendly;
+}
+
+function getLunchCount(currentState) {
+  const selectedCount = currentState.selectedNames.length;
+  if (currentState.budgetFriendly && selectedCount > 2) {
+    return selectedCount - 1;
+  }
+  return selectedCount;
 }
 
 function todayKey(date = new Date()) {

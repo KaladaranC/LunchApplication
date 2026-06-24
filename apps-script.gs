@@ -12,7 +12,15 @@ const PEOPLE = [
 const SHEET_NAME = "Lunch State";
 const LOG_SHEET_NAME = "SMS Log";
 const SCRIPT_TIME_ZONE = "Asia/Colombo";
-const STATE_HEADERS = ["date", "selectedNamesJson", "updatedAt", "lastManualSentAt", "lastScheduledSentAt"];
+const STATE_HEADERS = [
+  "date",
+  "selectedNamesJson",
+  "extraCurryPortion",
+  "budgetFriendly",
+  "updatedAt",
+  "lastManualSentAt",
+  "lastScheduledSentAt",
+];
 const LOG_HEADERS = ["sentAt", "date", "kind", "count", "message", "statusCode", "response"];
 
 function doPost(event) {
@@ -26,6 +34,10 @@ function doPost(event) {
 
     if (action === "setSelection") {
       return jsonResponse(setSelection(request.name, request.selected));
+    }
+
+    if (action === "setOption") {
+      return jsonResponse(setOption(request.option, request.value));
     }
 
     if (action === "resetToday") {
@@ -97,6 +109,33 @@ function setSelection(name, selected) {
     return saveState({
       date: todayKey(),
       selectedNames: PEOPLE.filter((person) => selectedNames.has(person)),
+      extraCurryPortion: current.extraCurryPortion,
+      budgetFriendly: current.budgetFriendly,
+      updatedAt: new Date().toISOString(),
+      lastManualSentAt: current.lastManualSentAt,
+      lastScheduledSentAt: current.lastScheduledSentAt,
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function setOption(option, value) {
+  const allowedOptions = ["extraCurryPortion", "budgetFriendly"];
+  if (!allowedOptions.includes(option)) {
+    throw new Error("Unknown option: " + option);
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+
+  try {
+    const current = getCurrentState();
+    return saveState({
+      date: todayKey(),
+      selectedNames: current.selectedNames,
+      extraCurryPortion: option === "extraCurryPortion" ? Boolean(value) : current.extraCurryPortion,
+      budgetFriendly: option === "budgetFriendly" ? Boolean(value) : current.budgetFriendly,
       updatedAt: new Date().toISOString(),
       lastManualSentAt: current.lastManualSentAt,
       lastScheduledSentAt: current.lastScheduledSentAt,
@@ -114,6 +153,8 @@ function resetToday() {
     return saveState({
       date: todayKey(),
       selectedNames: [],
+      extraCurryPortion: false,
+      budgetFriendly: false,
       updatedAt: new Date().toISOString(),
       lastManualSentAt: "",
       lastScheduledSentAt: "",
@@ -144,7 +185,8 @@ function sendSms(kind) {
       throw new Error("Missing CATERING_PHONE in Script Properties");
     }
 
-    const message = buildMessage(current.date, current.selectedNames, kind);
+    const count = getLunchCount(current);
+    const message = buildMessage(current.date, count, current.extraCurryPortion);
     const response = UrlFetchApp.fetch(
       "https://api.textbee.dev/api/v1/gateway/devices/" + encodeURIComponent(deviceId) + "/send-sms",
       {
@@ -167,7 +209,7 @@ function sendSms(kind) {
       sentAt: new Date(),
       date: current.date,
       kind,
-      count: current.selectedNames.length,
+      count,
       message,
       statusCode,
       response: responseBody,
@@ -182,6 +224,8 @@ function sendSms(kind) {
       return saveState({
         date: current.date,
         selectedNames: current.selectedNames,
+        extraCurryPortion: current.extraCurryPortion,
+        budgetFriendly: current.budgetFriendly,
         updatedAt,
         lastManualSentAt: updatedAt,
         lastScheduledSentAt: current.lastScheduledSentAt,
@@ -191,6 +235,8 @@ function sendSms(kind) {
     return saveState({
       date: current.date,
       selectedNames: current.selectedNames,
+      extraCurryPortion: current.extraCurryPortion,
+      budgetFriendly: current.budgetFriendly,
       updatedAt,
       lastManualSentAt: current.lastManualSentAt,
       lastScheduledSentAt: updatedAt,
@@ -206,6 +252,8 @@ function getTodayState() {
     ok: true,
     date: current.date,
     selectedNames: current.selectedNames,
+    extraCurryPortion: current.extraCurryPortion,
+    budgetFriendly: current.budgetFriendly,
     updatedAt: current.updatedAt,
     lastManualSentAt: current.lastManualSentAt,
     lastScheduledSentAt: current.lastScheduledSentAt,
@@ -222,18 +270,34 @@ function getCurrentState() {
     return {
       date: today,
       selectedNames: [],
+      extraCurryPortion: false,
+      budgetFriendly: false,
       updatedAt: "",
       lastManualSentAt: "",
       lastScheduledSentAt: "",
     };
   }
 
+  if (isLegacyStateRow(row)) {
+    return {
+      date: String(row[0]),
+      selectedNames: parseSelectedNames(row[1]),
+      extraCurryPortion: false,
+      budgetFriendly: false,
+      updatedAt: row[2] ? toIsoString(row[2]) : "",
+      lastManualSentAt: row[3] ? toIsoString(row[3]) : "",
+      lastScheduledSentAt: row[4] ? toIsoString(row[4]) : "",
+    };
+  }
+
   return {
     date: String(row[0]),
     selectedNames: parseSelectedNames(row[1]),
-    updatedAt: row[2] ? toIsoString(row[2]) : "",
-    lastManualSentAt: row[3] ? toIsoString(row[3]) : "",
-    lastScheduledSentAt: row[4] ? toIsoString(row[4]) : "",
+    extraCurryPortion: parseBoolean(row[2]),
+    budgetFriendly: parseBoolean(row[3]),
+    updatedAt: row[4] ? toIsoString(row[4]) : "",
+    lastManualSentAt: row[5] ? toIsoString(row[5]) : "",
+    lastScheduledSentAt: row[6] ? toIsoString(row[6]) : "",
   };
 }
 
@@ -245,6 +309,8 @@ function saveState(state) {
   const row = [
     state.date || today,
     JSON.stringify(state.selectedNames || []),
+    Boolean(state.extraCurryPortion),
+    Boolean(state.budgetFriendly),
     state.updatedAt || "",
     state.lastManualSentAt || "",
     state.lastScheduledSentAt || "",
@@ -274,6 +340,11 @@ function getOrCreateSheet(spreadsheet, name, headers) {
   const sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
+  } else {
+    const currentHeaders = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+    if (headers.some((header, index) => currentHeaders[index] !== header)) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
   }
   return sheet;
 }
@@ -291,10 +362,32 @@ function parseSelectedNames(raw) {
   }
 }
 
-function buildMessage(date, selectedNames, kind) {
-  const count = selectedNames.length;
-  const names = count ? selectedNames.join(", ") : "No names selected";
-  return "Lunch count (" + kind + ") for " + date + ": " + count + ". Names: " + names + ".";
+function parseBoolean(value) {
+  return value === true || String(value).toLowerCase() === "true";
+}
+
+function isBooleanCell(value) {
+  return value === true || value === false || String(value).toLowerCase() === "true" || String(value).toLowerCase() === "false";
+}
+
+function isLegacyStateRow(row) {
+  return row.length < STATE_HEADERS.length || (row[2] && !isBooleanCell(row[2])) || (row[3] && !isBooleanCell(row[3]));
+}
+
+function getLunchCount(state) {
+  const selectedCount = state.selectedNames.length;
+  if (state.budgetFriendly && selectedCount > 2) {
+    return selectedCount - 1;
+  }
+  return selectedCount;
+}
+
+function buildMessage(date, count, extraCurryPortion) {
+  return [
+    "Lunch count: " + count,
+    "Extra curry portion: " + (extraCurryPortion ? 1 : 0),
+    date,
+  ].join("\n");
 }
 
 function logSms(entry) {
